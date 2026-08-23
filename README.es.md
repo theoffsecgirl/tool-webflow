@@ -17,22 +17,6 @@
 
 ---
 
-```text
-┌──────────────────────────────────────────────────────┐
-│                                                      │
-│  ██████╗ ███████╗ ██████╗  ██╗ ██████╗  █████╗ ██╗  │
-│  ██╔══██╗██╔════╝ ██╔══██╗██║██╔══██╗██╔══██╗██║  │
-│  ██████╔╝█████╗  ██████╔╝██║██║  ██║███████║██║  │
-│  ██╔═══╝ ██╔══╝  ██╔══██╗██║██║  ██║██╔══██║╚═╝  │
-│  ██║     ███████╗██████╔╝██║██████╔╝██║  ██║██╗  │
-│  ╚═╝     ╚══════╝╚═════╝ ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  │
-│                                                      │
-│  offensive web scanner  v1.2.0  ·  by theoffsecgirl  │
-└──────────────────────────────────────────────────────┘
-```
-
----
-
 ## ¿Qué hace?
 
 Escáner ofensivo web escrito en Python que combina crawling, detección de XSS, inyección SQL, análisis de cabeceras de seguridad y detección de WAF con bypass por proveedor. Pensado para bug bounty y pentesting web.
@@ -46,7 +30,7 @@ Escáner ofensivo web escrito en Python que combina crawling, detección de XSS,
 - Detección de SQLi GET y POST en formularios
 - Análisis de cabeceras de seguridad (6 cabeceras)
 - Detección de WAF y bypass por proveedor (`--waf-xss`)
-- Exportación de resultados a JSON
+- Exportación de resultados a JSON / JSONL
 
 ---
 
@@ -91,7 +75,9 @@ python3 webxray.py --version
 --no-headers       Omitir cabeceras
 --waf-xss          Modo WAF + XSS avanzado (requiere wafw00f)
 -t, --timeout      Timeout en segundos (default: 10)
---json-output      Guardar resultados en JSON
+--json-output      Guardar resultados en JSON/JSONL
+--format           Formato de salida para export y stdout (json|jsonl)
+--stdout           Enviar findings normalizados a stdout
     --version      Muestra la versión
 ```
 
