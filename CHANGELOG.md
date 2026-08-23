@@ -4,6 +4,21 @@ All notable changes to **webxray** are documented here.
 
 ---
 
+## [1.2.0] – 2026-08-23
+
+### Fixed
+- `check_xss()`: eliminado el falso positivo estructural de "if payload in r.text". Ahora usa un marcador (`wxr` + 6 chars aleatorios) unico por request embebido en el payload, y clasifica el reflejo en `unescaped` (explotable), `escaped` (HTML-entity-encoded, no explotable) o `unclear`. Los findings de tipo `escaped`/`unclear` bajan de severidad y llevan nota explicita en vez de tratarse igual que un reflejo real.
+- `_sqli_hit()`: `status_changed` y `size_changed` dejan de ser señales suficientes por separado (podian disparar en cualquier pagina con contenido semi-dinamico: fecha, contador, sesion, ads). Ahora `error_kw` sigue bastando por si sola (senal fuerte); `status_changed` y `size_changed` solo cuentan si ocurren **ambas a la vez**, y en ese caso el finding se marca con confianza/severidad inferior a un hit por `error_kw`.
+
+### Changed
+- Umbral de `size_changed` en SQLi: de 200 bytes fijos a proporcional al tamano de la respuesta baseline (`max(100, 15% del baseline)`), para no disparar en respuestas pequeñas ni ser demasiado laxo en respuestas grandes.
+- Findings de XSS y SQLi ahora incluyen los campos `confidence`, `severity` y `note` para reflejar el nivel de certeza de la deteccion.
+
+### Added
+- Campo `"context"` en los findings de XSS sin escapar: heuristica que estima si el reflejo cae en `script-tag`, `unquoted-attribute`, `plain-text` o `unknown`, mirando los caracteres inmediatamente antes de la coincidencia en el body.
+
+---
+
 ## [1.1.0] – 2026-03-24
 
 ### Added

@@ -12,13 +12,16 @@
 Pensado para recon / bug bounty como primer filtro rapido.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 import json
+import random
 import signal
+import string
 import subprocess
 import sys
+from html import escape as html_escape
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
 
@@ -60,6 +63,20 @@ XSS_PAYLOADS: List[str] = [
     "<img src=x onerror=alert(1)>",
     "<svg/onload=alert(1)>",
     "\"autofocus onfocus=alert(1) x=\"",
+]
+
+# Plantillas usadas por check_xss(). El "{token}" se sustituye en tiempo de
+# ejecucion por un marcador aleatorio unico por request (ver _gen_xss_token),
+# para poder confirmar el reflejo sin ambiguedad frente a contenido casual
+# de la pagina. La estructura HTML (<script>, onerror=, comillas rotas...)
+# se mantiene igual que en XSS_PAYLOADS porque es lo que permite medir si la
+# app escapa o no esos caracteres especiales.
+XSS_PAYLOAD_TEMPLATES: List[str] = [
+    "<script>alert('{token}')</script>",
+    "'><script>alert('{token}')</script>",
+    "<img src=x onerror=alert('{token}')>",
+    "<svg/onload=alert('{token}')>",
+    "\"autofocus onfocus=alert('{token}') x=\"",
 ]
 
 SQLI_PAYLOADS: List[str] = [
@@ -202,11 +219,99 @@ def extract_params(url: str) -> List[str]:
     return list(dict(parse_qsl(urlparse(url).query, keep_blank_values=True)).keys())
 
 
+def _gen_xss_token() -> str:
+    """Marcador corto y unico por request, para confirmar reflejo real."""
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return "wxr" + suffix
+
+
+def _classify_xss_reflection(payload: str, token: str, body: str) -> Optional[str]:
+    """Clasifica el reflejo de un payload XSS en el body de la respuesta.
+
+    Importante: "reflejado" (el string aparece en la pagina) y "reflejado +
+    explotable" (el navegador lo interpreta como HTML/JS real, no como texto)
+    NO son lo mismo. Una app puede reflejar el input y aun asi ser segura si
+    lo hace HTML-escapado. Por eso primero confirmamos el reflejo via el
+    token (que no tiene caracteres especiales, sirve solo para localizar
+    la respuesta correcta) y despues miramos el CONTEXTO del payload.
+
+    Devuelve:
+      None       -> el token ni siquiera aparece: no hubo reflejo, no hay finding.
+      "unescaped"-> el payload aparece literal (< > " ' tal cual) -> el
+                    navegador lo parsea como marcado/script real -> explotable.
+      "escaped"  -> el token se refleja pero el payload solo aparece en su
+                    forma HTML-entity-encoded (&lt; &gt; &quot; &#x27;/&#39;)
+                    -> se renderiza como texto inerte, no explotable.
+      "unclear"  -> el token se refleja pero ni la forma cruda ni la escapada
+                    calzan exactas (encoding parcial/atipico) -> se reporta
+                    con confianza baja, sin afirmar explotabilidad.
+    """
+    if token not in body:
+        return None
+    if payload in body:
+        return "unescaped"
+    if html_escape(payload) in body:
+        return "escaped"
+    return "unclear"
+
+
+_XSS_REFLECTION_INFO = {
+    "unescaped": ("high", "reflejo sin escapar - explotable en el navegador"),
+    "escaped": ("info", "reflejado pero escapado - no explotable en el navegador"),
+    "unclear": ("low", "reflejo detectado pero no se pudo confirmar si esta escapado"),
+}
+
+
+def _detect_xss_context(body: str, payload: str) -> str:
+    """Heuristica (NO un parser HTML) para estimar en que zona del documento
+    cae un reflejo XSS sin escapar, mirando los caracteres inmediatamente
+    antes de la coincidencia. Es una pista de explotabilidad para no tener
+    que abrir la respuesta a mano, no una verdad absoluta - confirmar
+    siempre en el navegador antes de reportar.
+
+    Devuelve:
+      "script-tag"          -> el reflejo cae dentro de un <script>...</script>
+                                abierto -> se ejecuta como JS directamente.
+      "unquoted-attribute"  -> el reflejo cae dentro de una etiqueta HTML
+                                abierta (entre '<' y su '>') sin quedar
+                                encerrado en comillas balanceadas -> tipico
+                                de inyeccion de atributo sin comillas.
+      "plain-text"          -> el reflejo cae en texto normal del body, fuera
+                                de cualquier etiqueta abierta.
+      "unknown"             -> no se pudo determinar el contexto con esta
+                                heuristica (p.ej. dentro de comillas de
+                                atributo ya rotas por el propio payload).
+    """
+    idx = body.find(payload)
+    if idx == -1:
+        return "unknown"
+
+    before = body[:idx]
+
+    last_script_open = before.lower().rfind("<script")
+    last_script_close = before.lower().rfind("</script")
+    if last_script_open != -1 and last_script_open > last_script_close:
+        return "script-tag"
+
+    last_lt = before.rfind("<")
+    last_gt = before.rfind(">")
+    if last_lt != -1 and last_lt > last_gt:
+        # Dentro de una etiqueta abierta (aun no se ha visto su '>' de cierre).
+        segment = before[last_lt:]
+        if segment.count('"') % 2 == 0 and segment.count("'") % 2 == 0:
+            return "unquoted-attribute"
+        return "unknown"
+
+    return "plain-text"
+
+
 def check_xss(session: requests.Session, url: str, timeout: int) -> List[dict]:
     params = extract_params(url)
     findings: List[dict] = []
     for p in params:
-        for payload in XSS_PAYLOADS:
+        for template in XSS_PAYLOAD_TEMPLATES:
+            token = _gen_xss_token()
+            payload = template.format(token=token)
             mutated = mutate_url_with_payload(url, p, payload)
             if not mutated:
                 continue
@@ -214,24 +319,67 @@ def check_xss(session: requests.Session, url: str, timeout: int) -> List[dict]:
                 r = session.get(mutated, timeout=timeout, verify=True)
             except requests.RequestException:
                 continue
-            if payload in r.text:
-                log_warn("Posible XSS en {} param '{}' -> '{}'".format(url, p, payload))
-                findings.append({
-                    "type": "xss", "url": url,
-                    "parameter": p, "payload": payload,
-                    "status": r.status_code,
-                })
-                break
+            reflection = _classify_xss_reflection(payload, token, r.text)
+            if reflection is None:
+                continue
+            severity, note = _XSS_REFLECTION_INFO[reflection]
+            context = _detect_xss_context(r.text, payload) if reflection == "unescaped" else "unknown"
+            if reflection == "unescaped":
+                log_warn("Posible XSS en {} param '{}' -> '{}' [{}]".format(url, p, payload, context))
+            else:
+                log_info("Reflejo XSS ({}) en {} param '{}'".format(reflection, url, p))
+            findings.append({
+                "type": "xss", "url": url,
+                "parameter": p, "payload": payload,
+                "status": r.status_code,
+                "confidence": reflection,
+                "severity": severity,
+                "note": note,
+                "context": context,
+            })
+            break
     return findings
 
 
-def _sqli_hit(r: requests.Response, baseline: Optional[Tuple[int, int]]) -> bool:
-    error_kw = any(e in r.text.lower() for e in SQLI_ERROR_KW)
+_SQLI_HIT_INFO = {
+    "error_kw": ("high", "keyword de error SQL en la respuesta"),
+    "status_size": ("low", "status y tamano de respuesta cambiaron a la vez respecto al baseline - revisar manualmente, puede ser contenido dinamico"),
+}
+
+
+def _sqli_hit(r: requests.Response, baseline: Optional[Tuple[int, int]]) -> Optional[str]:
+    """Determina si una respuesta indica una posible inyeccion SQL.
+
+    Devuelve:
+      "error_kw"    -> aparecio un keyword de error SQL (sintaxis, motor de
+                       BD, etc.) en el body. Senal fuerte por si sola -
+                       suficiente para marcar el finding con confianza alta.
+      "status_size" -> no hay keyword de error, pero el status Y el tamano
+                       de la respuesta cambiaron respecto al baseline A LA
+                       VEZ. Por separado, cualquiera de las dos senales es
+                       demasiado ruidosa (contenido semi-dinamico: fecha,
+                       contador, sesion, ads rotativos) para bastar por si
+                       sola, asi que ahora se exigen ambas juntas. Confianza
+                       baja/media, requiere revision manual.
+      None          -> sin senal de SQLi.
+    """
+    if any(e in r.text.lower() for e in SQLI_ERROR_KW):
+        return "error_kw"
+
     if baseline:
-        status_changed = r.status_code != baseline[0]
-        size_changed   = abs(len(r.text) - baseline[1]) > 200
-        return status_changed or size_changed or error_kw
-    return error_kw
+        baseline_status, baseline_len = baseline
+        status_changed = r.status_code != baseline_status
+        # Umbral proporcional al tamano de la baseline en vez de un numero
+        # fijo: 200 caracteres es mucho de mas en una respuesta pequena
+        # (dispara con cualquier ruido) y muy poco en una grande. Se usa un
+        # 15% del tamano baseline, con un piso de 100 caracteres para
+        # paginas muy pequenas donde un 15% seria trivial.
+        size_threshold = max(100, int(baseline_len * 0.15))
+        size_changed = abs(len(r.text) - baseline_len) > size_threshold
+        if status_changed and size_changed:
+            return "status_size"
+
+    return None
 
 
 def check_sqli(session: requests.Session, url: str, timeout: int) -> List[dict]:
@@ -256,12 +404,17 @@ def check_sqli(session: requests.Session, url: str, timeout: int) -> List[dict]:
                 r = session.get(mutated, timeout=timeout, verify=True)
             except requests.RequestException:
                 continue
-            if _sqli_hit(r, baseline):
-                log_warn("Posible SQLi (GET) en {} param '{}' -> '{}'".format(url, p, payload))
+            hit = _sqli_hit(r, baseline)
+            if hit:
+                severity, note = _SQLI_HIT_INFO[hit]
+                log_warn("Posible SQLi (GET) en {} param '{}' -> '{}' [{}]".format(url, p, payload, hit))
                 findings.append({
                     "type": "sqli_get", "url": url,
                     "parameter": p, "payload": payload,
                     "status": r.status_code,
+                    "confidence": hit,
+                    "severity": severity,
+                    "note": note,
                 })
                 break
 
@@ -287,12 +440,17 @@ def check_sqli(session: requests.Session, url: str, timeout: int) -> List[dict]:
                     r = session.post(form_url, data=data, timeout=timeout, verify=True)
                 except requests.RequestException:
                     continue
-                if _sqli_hit(r, form_baseline):
-                    log_warn("Posible SQLi (POST) en {} campo '{}'".format(form_url, input_name))
+                hit = _sqli_hit(r, form_baseline)
+                if hit:
+                    severity, note = _SQLI_HIT_INFO[hit]
+                    log_warn("Posible SQLi (POST) en {} campo '{}' [{}]".format(form_url, input_name, hit))
                     findings.append({
                         "type": "sqli_post", "url": form_url,
                         "parameter": input_name, "payload": payload,
                         "status": r.status_code,
+                        "confidence": hit,
+                        "severity": severity,
+                        "note": note,
                     })
                     break
 

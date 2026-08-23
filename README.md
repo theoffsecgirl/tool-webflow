@@ -5,7 +5,7 @@
 **Offensive web scanner: crawling, XSS, SQLi, headers and WAF bypass**
 
 ![Language](https://img.shields.io/badge/Python-3.8+-9E4AFF?style=flat-square&logo=python&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.0-9E4AFF?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.0-9E4AFF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-9E4AFF?style=flat-square)
 ![Category](https://img.shields.io/badge/Category-Bug%20Bounty%20%7C%20Pentesting-111111?style=flat-square)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)
@@ -28,7 +28,7 @@
 │  ██║     ███████╗██████╔╝██║██████╔╝██║  ██║██╗  │
 │  ╚═╝     ╚══════╝╚═════╝ ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  │
 │                                                      │
-│  offensive web scanner  v1.1.0  ·  by theoffsecgirl  │
+│  offensive web scanner  v1.2.0  ·  by theoffsecgirl  │
 └──────────────────────────────────────────────────────┘
 ```
 
